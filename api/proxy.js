@@ -35,10 +35,35 @@ function toProxy(base, link) {
 }
 
 function rewriteHtml(html, base) {
-  return html.replace(
-    /(\s(?:href|src|action)\s*=\s*)(["'])(.*?)\2/gi,
+  // JavaScriptを除去して静的ページとして表示する
+  html = html.replace(/<script\b[\s\S]*?<\/script>/gi, "");
+  html = html.replace(/<script\b[^>]*\/>/gi, "");
+  // href / src / action / poster / data-src を書き換え
+  html = html.replace(
+    /(\s(?:href|src|action|poster|data-src)\s*=\s*)(["'])(.*?)\2/gi,
     (_m, attr, q, val) => `${attr}${q}${toProxy(base, val)}${q}`
   );
+  // srcset を書き換え
+  html = html.replace(/(\ssrcset\s*=\s*)(["'])(.*?)\2/gi, (_m, attr, q, val) => {
+    const out = val
+      .split(",")
+      .map((part) => {
+        const [u, ...rest] = part.trim().split(/\s+/);
+        return [toProxy(base, u), ...rest].join(" ");
+      })
+      .join(", ");
+    return `${attr}${q}${out}${q}`;
+  });
+  // <style> と style="" 内の url() を書き換え
+  html = html.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, (m) => rewriteCss(m, base));
+  return html;
+}
+
+function rewriteCss(css, base) {
+  return css.replace(/url\(\s*(["']?)(.*?)\1\s*\)/gi, (_m, q, val) => {
+    if (/^data:/i.test(val)) return _m;
+    return `url(${q}${toProxy(base, val)}${q})`;
+  });
 }
 
 module.exports = async (req, res) => {
@@ -88,6 +113,10 @@ module.exports = async (req, res) => {
   if (type.includes("text/html")) {
     const html = await upstream.text();
     return res.send(rewriteHtml(html, target.href));
+  }
+  if (type.includes("text/css")) {
+    const css = await upstream.text();
+    return res.send(rewriteCss(css, target.href));
   }
   const buf = Buffer.from(await upstream.arrayBuffer());
   return res.send(buf);
